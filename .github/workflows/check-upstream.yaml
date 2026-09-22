@@ -1,0 +1,86 @@
+name: Check upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # mondays, 06:17 UTC
+    #
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream chisel tag to check against (defaults to the latest release)
+        type: string
+        required: false
+
+permissions: {}
+
+jobs:
+  check:
+    name: Matches latest upstream release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write # keepalive
+      contents: read
+      issues: write  # report scheduled failures
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # GitHub disables schedules in public repos after 60 days without activity,
+      # and this repo can go months between upstream releases.
+      - name: Keep schedule enabled
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/check-upstream.yaml/enable"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Highest semver rather than GitHub's "latest", so a backport release on an
+      # older series is never checked against.
+      - name: Clone upstream
+        id: upstream
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          ref="${INPUT_REF:-$(gh release list --repo canonical/chisel --exclude-drafts --exclude-pre-releases \
+            --json tagName --jq '.[].tagName' | sort -V | tail -n 1)}"
+          git -c advice.detachedHead=false clone --quiet --depth=1 \
+            --branch="${ref:?could not resolve the latest upstream release}" \
+            https://github.com/canonical/chisel "${RUNNER_TEMP}/chisel"
+          printf 'ref=%s\n' "${ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Apply upstream
+        run: ./.github/scripts/apply-upstream/apply_upstream.py "${RUNNER_TEMP}/chisel"
+
+      - name: Tidy
+        run: go mod tidy
+
+      - name: Check for differences
+        env:
+          REF: ${{ steps.upstream.outputs.ref }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            printf 'mirror is out of sync with upstream %s:\n' "${REF}" >&2
+            git status --short >&2
+            git diff >&2
+            exit 1
+          fi
+
+      - name: Report failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          TITLE: Mirror is out of sync with upstream
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          issue="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${TITLE}\" in:title" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "${issue}" ]; then
+            gh issue comment "${issue}" --repo "${GITHUB_REPOSITORY}" --body "Still failing: ${RUN_URL}"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" --body "Scheduled check failed: ${RUN_URL}"
+          fi

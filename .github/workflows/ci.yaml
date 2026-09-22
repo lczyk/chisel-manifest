@@ -4,10 +4,7 @@ on:
   push:
     branches:
       - main
-      #
   pull_request:
-  # sync-upstream.yaml dispatches this on its PR branch, since PRs opened with
-  # GITHUB_TOKEN do not trigger pull_request runs.
   workflow_dispatch:
 
 permissions:
@@ -16,7 +13,7 @@ permissions:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,7 +43,7 @@ jobs:
 
   upstream-drift:
     name: Matches tracked upstream release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,14 +54,41 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Re-mirror tracked release
-        run: ./.github/scripts/sync-upstream.sh
+      - name: Clone tracked upstream release
+        run: |
+          ref="$(grep -oE 'github\.com/canonical/chisel/releases/tag/[^)]+' README.md)"
+          git -c advice.detachedHead=false clone --quiet --depth=1 --branch="${ref##*/}" \
+            https://github.com/canonical/chisel "${RUNNER_TEMP}/chisel"
+
+      - name: Re-apply tracked release
+        run: ./.github/scripts/apply-upstream/apply_upstream.py "${RUNNER_TEMP}/chisel"
+
+      - name: Tidy
+        run: go mod tidy
 
       - name: Check for drift
         run: |
           if [ -n "$(git status --porcelain)" ]; then
-            printf 'mirror differs from upstream %s:\n' "$(./.github/scripts/sync-upstream.sh --tracked)" >&2
+            printf 'mirror differs from its tracked upstream release:\n' >&2
             git status --short >&2
             git diff >&2
             exit 1
           fi
+
+  apply-script:
+    name: Test apply script
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - run: pip install pytest
+
+      - name: Run unit tests
+        run: pytest .github/scripts/apply-upstream/
