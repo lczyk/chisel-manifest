@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      #
+  pull_request:
+  # sync-upstream.yaml dispatches this on its PR branch, since PRs opened with
+  # GITHUB_TOKEN do not trigger pull_request runs.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            printf 'not gofmt-ed:\n%s\n' "${unformatted}" >&2
+            exit 1
+          fi
+
+      - name: Check go.mod is tidy
+        run: go mod tidy -diff
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  upstream-drift:
+    name: Matches tracked upstream release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Re-mirror tracked release
+        run: ./.github/scripts/sync-upstream.sh
+
+      - name: Check for drift
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            printf 'mirror differs from upstream %s:\n' "$(./.github/scripts/sync-upstream.sh --tracked)" >&2
+            git status --short >&2
+            git diff >&2
+            exit 1
+          fi
