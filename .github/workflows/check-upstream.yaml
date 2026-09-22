@@ -16,22 +16,14 @@ permissions: {}
 jobs:
   check:
     name: Matches latest upstream release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: write # keepalive
       contents: read
-      issues: write  # report scheduled failures
+      issues: write # report scheduled failures
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      # GitHub disables schedules in public repos after 60 days without activity,
-      # and this repo can go months between upstream releases.
-      - name: Keep schedule enabled
-        if: github.event_name == 'schedule'
-        continue-on-error: true
-        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/check-upstream.yaml/enable"
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -40,15 +32,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Highest semver rather than GitHub's "latest", so a backport release on an
-      # older series is never checked against.
       - name: Clone upstream
         id: upstream
         env:
           INPUT_REF: ${{ inputs.ref }}
         run: |
-          ref="${INPUT_REF:-$(gh release list --repo canonical/chisel --exclude-drafts --exclude-pre-releases \
-            --json tagName --jq '.[].tagName' | sort -V | tail -n 1)}"
+          ref="${INPUT_REF:-$(gh release view --repo canonical/chisel --json tagName --jq .tagName)}"
           git -c advice.detachedHead=false clone --quiet --depth=1 \
             --branch="${ref:?could not resolve the latest upstream release}" \
             https://github.com/canonical/chisel "${RUNNER_TEMP}/chisel"
